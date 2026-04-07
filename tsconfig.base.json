@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "strict": true,
+    "esModuleInterop": true,
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "baseUrl": ".",
+    "paths": {
+      "@libs/config": ["libs/config/src"],
+      "@libs/shared": ["libs/shared/src"],
+      "@libs/domain": ["libs/domain/src"],
+      "@libs/application": ["libs/application/src"],
+      "@libs/infrastructure": ["libs/infrastructure/src"]
+    }
+  }
+}

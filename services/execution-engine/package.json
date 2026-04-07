@@ -1,0 +1,22 @@
+{
+  "name": "@services/execution-engine",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/main.ts",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@libs/config": "workspace:*",
+    "@libs/shared": "workspace:*",
+    "axios": "^1.7.7",
+    "ioredis": "^5.4.1",
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.3"
+  }
+}

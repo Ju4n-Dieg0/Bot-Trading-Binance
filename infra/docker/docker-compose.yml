@@ -1,0 +1,80 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: trading-postgres
+    restart: unless-stopped
+    env_file:
+      - ../../.env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-trading}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trading}
+      POSTGRES_DB: ${POSTGRES_DB:-trading}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../postgres/init:/docker-entrypoint-initdb.d
+
+  redis:
+    image: redis:7-alpine
+    container_name: trading-redis
+    restart: unless-stopped
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - ../redis/redis.conf:/usr/local/etc/redis/redis.conf
+      - redis_data:/data
+
+  trading-api:
+    image: node:20-alpine
+    container_name: trading-api
+    working_dir: /workspace
+    env_file:
+      - ../../.env
+    environment:
+      REDIS_HOST: redis
+    volumes:
+      - ../../:/workspace
+      - /workspace/node_modules
+    command: sh -c "corepack enable; pnpm install --force --no-frozen-lockfile; pnpm --filter @apps/trading-api exec tsx watch src/main.ts"
+    depends_on:
+      - postgres
+      - redis
+    ports:
+      - "${TRADING_API_PORT:-3000}:3000"
+
+  telegram-bot:
+    image: node:20-alpine
+    container_name: trading-telegram-bot
+    working_dir: /workspace
+    env_file:
+      - ../../.env
+    environment:
+      REDIS_HOST: redis
+    volumes:
+      - ../../:/workspace
+      - /workspace/node_modules
+    command: sh -c "corepack enable; pnpm install --force --no-frozen-lockfile; pnpm --filter @apps/telegram-bot dev"
+    depends_on:
+      - redis
+
+  ai-engine:
+    image: python:3.11-slim
+    container_name: ai-engine
+    working_dir: /workspace/services/ai-engine
+    env_file:
+      - ../../.env
+    environment:
+      REDIS_HOST: redis
+    volumes:
+      - ../../:/workspace
+    command: sh -c "pip install --no-cache-dir -r requirements.txt; uvicorn src.main:app --host 0.0.0.0 --port 8000"
+    depends_on:
+      - redis
+    ports:
+      - "8000:8000"
+
+volumes:
+  postgres_data:
+  redis_data:

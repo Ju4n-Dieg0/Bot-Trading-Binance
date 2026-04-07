@@ -1,0 +1,20 @@
+{
+  "name": "@apps/telegram-bot",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/main.ts",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@libs/config": "workspace:*",
+    "@libs/shared": "workspace:*",
+    "ioredis": "^5.4.1",
+    "telegraf": "^4.16.3"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.3"
+  }
+}
