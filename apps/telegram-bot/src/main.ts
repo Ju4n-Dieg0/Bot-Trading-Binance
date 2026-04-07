@@ -9,6 +9,9 @@ const pendingSignals = new Map<string, TradeSignal>();
 const activeChats = new Set<string>();
 const autoModeByChat = new Map<string, boolean>();
 const recentSignals: TradeSignal[] = [];
+const paperPositionBySymbol = new Map<string, { quantity: number; averageEntryPrice: number }>();
+let paperBalance = 0;
+let realizedPnl = 0;
 let openPositionsCount = 0;
 
 function pushRecentSignal(signal: TradeSignal): void {
@@ -18,8 +21,92 @@ function pushRecentSignal(signal: TradeSignal): void {
   }
 }
 
+function formatAmount(value: number): string {
+  return value.toFixed(2);
+}
+
+function getPaperPosition(symbol: string): { quantity: number; averageEntryPrice: number } {
+  const current = paperPositionBySymbol.get(symbol);
+  if (current) {
+    return current;
+  }
+
+  const initial = { quantity: 0, averageEntryPrice: 0 };
+  paperPositionBySymbol.set(symbol, initial);
+  return initial;
+}
+
+function updatePaperPortfolio(payload: {
+  symbol: string;
+  action: "buy" | "sell" | "hold";
+  executedPrice?: number | null;
+  executedQty?: number | null;
+  tradingMode: "paper" | "real";
+}): string | null {
+  if (payload.tradingMode !== "paper") {
+    return null;
+  }
+
+  const executedPrice = payload.executedPrice ?? 0;
+  const executedQty = payload.executedQty ?? 0;
+  if (executedPrice <= 0 || executedQty <= 0) {
+    return null;
+  }
+
+  const position = getPaperPosition(payload.symbol);
+
+  if (payload.action === "buy") {
+    const previousCost = position.quantity * position.averageEntryPrice;
+    const newCost = executedQty * executedPrice;
+    const newQuantity = position.quantity + executedQty;
+
+    position.quantity = newQuantity;
+    position.averageEntryPrice = newQuantity > 0 ? (previousCost + newCost) / newQuantity : 0;
+    paperBalance -= newCost;
+    return null;
+  }
+
+  if (payload.action === "sell") {
+    const sellQuantity = Math.min(position.quantity, executedQty);
+    const pnl = (executedPrice - position.averageEntryPrice) * sellQuantity;
+    realizedPnl += pnl;
+    paperBalance += executedPrice * sellQuantity;
+    position.quantity = Math.max(0, position.quantity - sellQuantity);
+
+    if (position.quantity === 0) {
+      position.averageEntryPrice = 0;
+    }
+
+    return `\nPnL realizado: ${formatAmount(pnl)} USDT`;
+  }
+
+  return null;
+}
+
+function buildBalanceSummary(symbol: string): string {
+  const position = getPaperPosition(symbol);
+  return [
+    `Balance estimado: ${formatAmount(paperBalance)} USDT`,
+    `PnL realizado: ${formatAmount(realizedPnl)} USDT`,
+    `Posicion ${symbol}: ${position.quantity.toFixed(6)} (${formatAmount(position.averageEntryPrice)} USDT avg)`
+  ].join("\n");
+}
+
+function resolveTargetChatId(env: ReturnType<typeof getEnv>): string | undefined {
+  return env.TELEGRAM_DEFAULT_CHAT_ID || activeChats.values().next().value;
+}
+
+async function safeAnswerCallbackQuery(ctx: { answerCbQuery: (text?: string) => Promise<unknown> }, text: string): Promise<void> {
+  try {
+    await ctx.answerCbQuery(text);
+  } catch (error: unknown) {
+    console.error("telegram-bot answerCbQuery error", error);
+  }
+}
+
 async function bootstrap(): Promise<void> {
   const env = getEnv();
+  paperBalance = env.PAPER_INITIAL_BALANCE;
 
   if (!env.TELEGRAM_BOT_TOKEN) {
     throw new Error("TELEGRAM_BOT_TOKEN is required to start telegram-bot");
@@ -27,6 +114,10 @@ async function bootstrap(): Promise<void> {
 
   const bot = createTelegramClient(env.TELEGRAM_BOT_TOKEN);
   registerStartCommand(bot);
+
+  bot.catch((error: unknown) => {
+    console.error("telegram-bot unhandled error", error);
+  });
 
   bot.on("message", async (ctx, next) => {
     const chatId = String(ctx.chat.id);
@@ -71,8 +162,11 @@ async function bootstrap(): Promise<void> {
   });
 
   bot.command("balance", async (ctx) => {
-    const mode = env.TRADING_MODE === "paper" ? "paper" : "live";
-    await ctx.reply(`Balance (${mode}): no disponible en bootstrap inicial.`);
+    const symbol = env.TRADING_SYMBOL;
+    await ctx.reply([
+      `Modo: ${env.TRADING_MODE}`,
+      buildBalanceSummary(symbol)
+    ].join("\n"));
   });
 
   bot.command("risk", async (ctx) => {
@@ -107,7 +201,7 @@ async function bootstrap(): Promise<void> {
     password: env.REDIS_PASSWORD || undefined
   });
 
-  await subscriber.subscribe("signal_generated", "execution.completed");
+  await subscriber.subscribe("signal_generated", "execution.completed", "order_executed");
 
   subscriber.on("message", async (channel, message) => {
     try {
@@ -121,11 +215,75 @@ async function bootstrap(): Promise<void> {
         return;
       }
 
+      if (channel === "order_executed") {
+        const payload = JSON.parse(message) as {
+          signalId: string;
+          symbol: string;
+          action: "buy" | "sell" | "hold";
+          status: "executed" | "rejected";
+          orderId: string | null;
+          executedPrice: number | null;
+          executedQty: number | null;
+          tradingMode: "paper" | "real";
+          reason: string;
+          errorMessage?: string | null;
+          createdAt: string;
+        };
+
+        const chatId = resolveTargetChatId(env);
+        if (!chatId) {
+          return;
+        }
+
+        if (payload.status !== "executed") {
+          const errorLabel = payload.reason === "insufficient-funds"
+            ? "Fondos insuficientes"
+            : payload.reason === "binance-api-error"
+              ? "Error de Binance"
+              : "Error interno";
+
+          await bot.telegram.sendMessage(
+            chatId,
+            [
+              `${payload.action.toUpperCase()} rechazado en ${payload.symbol}`,
+              `Motivo: ${errorLabel}`,
+              payload.errorMessage ? `Detalle: ${payload.errorMessage}` : "",
+              payload.tradingMode === "paper"
+                ? `Modo paper: sin cambio de balance.`
+                : `Modo real: revisar saldo, red y permisos de la API.`
+            ]
+              .filter(Boolean)
+              .join("\n")
+          );
+          return;
+        }
+
+        const balanceNote = updatePaperPortfolio(payload);
+
+        const summary = payload.tradingMode === "paper"
+          ? buildBalanceSummary(payload.symbol)
+          : `Modo real: operacion ejecutada en Binance. Balance de cuenta no consultado por este bot.`;
+
+        await bot.telegram.sendMessage(
+          chatId,
+          [
+            `${payload.action.toUpperCase()} ejecutado en ${payload.symbol}`,
+            `Precio: ${payload.executedPrice?.toFixed(2) ?? "n/a"}`,
+            `Cantidad: ${payload.executedQty?.toFixed(6) ?? "n/a"}`,
+            summary,
+            balanceNote ? balanceNote.trim() : ""
+          ]
+            .filter(Boolean)
+            .join("\n")
+        );
+        return;
+      }
+
       const signal = JSON.parse(message) as TradeSignal;
       pushRecentSignal(signal);
       pendingSignals.set(signal.signalId, signal);
 
-      const chatId = env.TELEGRAM_DEFAULT_CHAT_ID || activeChats.values().next().value;
+      const chatId = resolveTargetChatId(env);
       if (!chatId) {
         return;
       }
@@ -157,7 +315,7 @@ async function bootstrap(): Promise<void> {
     const signal = pendingSignals.get(signalId);
 
     if (!signal) {
-      await ctx.answerCbQuery("Signal expirada o no encontrada");
+      await safeAnswerCallbackQuery(ctx, "Signal expirada o no encontrada");
       return;
     }
 
@@ -169,6 +327,8 @@ async function bootstrap(): Promise<void> {
         approved: true,
         symbol: signal.symbol,
         action: signal.action,
+        stopLoss: signal.stopLoss,
+        takeProfit: signal.takeProfit,
         createdAt: new Date().toISOString()
       });
 
@@ -177,7 +337,7 @@ async function bootstrap(): Promise<void> {
     }
 
     pendingSignals.delete(signalId);
-    await ctx.answerCbQuery(approved ? "Operacion confirmada" : "Operacion rechazada");
+    await safeAnswerCallbackQuery(ctx, approved ? "Operacion confirmada" : "Operacion rechazada");
   });
 
   await bot.launch();

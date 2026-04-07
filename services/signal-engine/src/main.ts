@@ -3,18 +3,44 @@ import { randomUUID } from "node:crypto";
 import { getEnv } from "@libs/config";
 import { type ProbabilitySignal, type TradeSignal } from "@libs/shared";
 
-const SIGNAL_THRESHOLD = 0.65;
+function resolveSignalAction(
+  probabilityUp: number,
+  buyThreshold: number,
+  sellThreshold: number
+): "buy" | "sell" | "hold" {
+  if (probabilityUp >= buyThreshold) {
+    return "buy";
+  }
 
-function buildSignal(probability: ProbabilitySignal, stopLossPct: number, takeProfitPct: number): TradeSignal {
+  if (probabilityUp <= sellThreshold) {
+    return "sell";
+  }
+
+  return "hold";
+}
+
+function buildSignal(
+  probability: ProbabilitySignal,
+  action: "buy" | "sell",
+  stopLossPct: number,
+  takeProfitPct: number
+): TradeSignal {
 
   const lastClose = probability.features.lastClose;
-  const stopLoss = Number((lastClose * (1 - stopLossPct / 100)).toFixed(2));
-  const takeProfit = Number((lastClose * (1 + takeProfitPct / 100)).toFixed(2));
+  const stopLoss =
+    action === "buy"
+      ? Number((lastClose * (1 - stopLossPct / 100)).toFixed(2))
+      : Number((lastClose * (1 + stopLossPct / 100)).toFixed(2));
+
+  const takeProfit =
+    action === "buy"
+      ? Number((lastClose * (1 + takeProfitPct / 100)).toFixed(2))
+      : Number((lastClose * (1 - takeProfitPct / 100)).toFixed(2));
 
   return {
     signalId: randomUUID(),
     symbol: probability.symbol,
-    action: "buy",
+    action,
     probabilityUp: probability.probabilityUp,
     stopLoss,
     takeProfit,
@@ -40,11 +66,23 @@ async function bootstrap(): Promise<void> {
   subscriber.on("message", async (_channel, message) => {
     try {
       const probability = JSON.parse(message) as ProbabilitySignal;
-      if (probability.probabilityUp <= SIGNAL_THRESHOLD) {
+
+      const action = resolveSignalAction(
+        probability.probabilityUp,
+        env.SIGNAL_BUY_THRESHOLD,
+        env.SIGNAL_SELL_THRESHOLD
+      );
+
+      if (action === "hold") {
         return;
       }
 
-      const signal = buildSignal(probability, env.DEFAULT_STOP_LOSS_PCT, env.DEFAULT_TAKE_PROFIT_PCT);
+      const signal = buildSignal(
+        probability,
+        action,
+        env.DEFAULT_STOP_LOSS_PCT,
+        env.DEFAULT_TAKE_PROFIT_PCT
+      );
       await publisher.publish("signal_generated", JSON.stringify(signal));
       await publisher.publish("signal.generated", JSON.stringify(signal));
     } catch (error: unknown) {

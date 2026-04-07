@@ -43,12 +43,13 @@ export interface RedisEventPayloadMap {
     signalId: string;
     symbol: string;
     action: "buy" | "sell" | "hold";
-    status: "executed";
+    status: "executed" | "rejected";
     orderId: string | null;
     executedPrice: number | null;
     executedQty: number | null;
     tradingMode: "paper" | "real";
     reason: string;
+    errorMessage?: string | null;
     createdAt: string;
   };
   position_closed: {

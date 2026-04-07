@@ -66,5 +66,7 @@ export interface TradeConfirmation {
   approved: boolean;
   symbol: string;
   action: "buy" | "sell" | "hold";
+  stopLoss: number;
+  takeProfit: number;
   createdAt: string;
 }

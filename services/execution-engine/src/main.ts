@@ -11,6 +11,7 @@ interface ExecutionResult {
   executedPrice?: number;
   executedQty?: number;
   reason?: string;
+  errorMessage?: string;
 }
 
 interface BinanceOrderResponse {
@@ -24,12 +25,51 @@ function normalizeTradingMode(mode: string): "paper" | "real" {
   return mode === "real" || mode === "live" ? "real" : "paper";
 }
 
+function resolveExecutionErrorReason(error: unknown): { reason: string; errorMessage: string } {
+  if (axios.isAxiosError(error)) {
+    const axiosError = error as {
+      response?: { data?: { code?: number; msg?: string } };
+      message?: string;
+    };
+    const responseData = axiosError.response?.data as { code?: number; msg?: string } | undefined;
+    const code = responseData?.code;
+    const message = responseData?.msg || axiosError.message || "axios-request-failed";
+
+    if (code === -2010 || code === -2019 || /insufficient/i.test(message)) {
+      return {
+        reason: "insufficient-funds",
+        errorMessage: message
+      };
+    }
+
+    return {
+      reason: "binance-api-error",
+      errorMessage: message
+    };
+  }
+
+  if (error instanceof Error) {
+    return {
+      reason: "internal-error",
+      errorMessage: error.message
+    };
+  }
+
+  return {
+    reason: "internal-error",
+    errorMessage: "unknown-error"
+  };
+}
+
 async function simulatePaperOrder(confirmation: TradeConfirmation): Promise<ExecutionResult> {
+  const env = getEnv();
+  const estimatedPrice = Number(((confirmation.stopLoss + confirmation.takeProfit) / 2).toFixed(2));
+
   return {
     status: "executed",
     orderId: `paper-${randomUUID()}`,
-    executedPrice: 0,
-    executedQty: 0,
+    executedPrice: estimatedPrice,
+    executedQty: Number(env.PAPER_ORDER_QUANTITY.toFixed(6)),
     reason: `paper-simulated-${confirmation.action}`
   };
 }
@@ -90,6 +130,43 @@ async function executeTrade(confirmation: TradeConfirmation, mode: string): Prom
   return executeBinanceSpotOrder(confirmation);
 }
 
+async function publishExecutionEvent(
+  publisher: Redis,
+  confirmation: TradeConfirmation,
+  result: ExecutionResult,
+  mode: string
+): Promise<void> {
+  await publisher.publish(
+    "order_executed",
+    JSON.stringify({
+      signalId: confirmation.signalId,
+      symbol: confirmation.symbol,
+      action: confirmation.action,
+      status: result.status,
+      orderId: result.orderId ?? null,
+      executedPrice: result.executedPrice ?? null,
+      executedQty: result.executedQty ?? null,
+      tradingMode: normalizeTradingMode(mode),
+      reason: result.reason ?? "ok",
+      errorMessage: result.errorMessage ?? null,
+      createdAt: new Date().toISOString()
+    })
+  );
+
+  await publisher.publish(
+    "execution.completed",
+    JSON.stringify({
+      ...confirmation,
+      status: result.status,
+      executedPrice: result.executedPrice ?? null,
+      executedQty: result.executedQty ?? null,
+      reason: result.reason ?? "ok",
+      errorMessage: result.errorMessage ?? null,
+      createdAt: new Date().toISOString()
+    })
+  );
+}
+
 async function bootstrap(): Promise<void> {
   const env = getEnv();
 
@@ -110,7 +187,7 @@ async function bootstrap(): Promise<void> {
   await db.query("select 1");
   await subscriber.subscribe("trade_confirmed", "trade.confirmed");
 
-  subscriber.on("message", async (_channel, message) => {
+  subscriber.on("message", async (_channel: string, message: string) => {
     try {
       const confirmation = JSON.parse(message) as TradeConfirmation;
       const result = await executeTrade(confirmation, env.TRADING_MODE);
@@ -127,46 +204,65 @@ async function bootstrap(): Promise<void> {
         [confirmation.symbol, confirmation.action, result.status, env.TRADING_MODE]
       );
 
-      if (result.status === "executed") {
+      await publishExecutionEvent(publisher, confirmation, result, env.TRADING_MODE);
+
+      if (result.status === "executed" && confirmation.action === "sell") {
         await publisher.publish(
-          "order_executed",
+          "position_closed",
           JSON.stringify({
             signalId: confirmation.signalId,
             symbol: confirmation.symbol,
-            action: confirmation.action,
-            status: result.status,
-            orderId: result.orderId ?? null,
-            executedPrice: result.executedPrice ?? null,
-            executedQty: result.executedQty ?? null,
-            tradingMode: normalizeTradingMode(env.TRADING_MODE),
-            reason: result.reason ?? "ok",
+            closeReason: "manual_sell",
             createdAt: new Date().toISOString()
           })
         );
-
-        if (confirmation.action === "sell") {
-          await publisher.publish(
-            "position_closed",
-            JSON.stringify({
-              signalId: confirmation.signalId,
-              symbol: confirmation.symbol,
-              closeReason: "manual_sell",
-              createdAt: new Date().toISOString()
-            })
-          );
-        }
       }
+    } catch (error: unknown) {
+      const failedConfirmation = JSON.parse(message) as TradeConfirmation;
+      const normalizedError = resolveExecutionErrorReason(error);
+
+      await db.query(
+        `insert into orders (tenant_id, symbol, side, status, trading_mode)
+         values (
+           (select id from tenants limit 1),
+           $1,
+           $2,
+           $3,
+           $4
+         )`,
+        [failedConfirmation.symbol, failedConfirmation.action, "rejected", env.TRADING_MODE]
+      );
+
+      await publisher.publish(
+        "order_executed",
+        JSON.stringify({
+          signalId: failedConfirmation.signalId,
+          symbol: failedConfirmation.symbol,
+          action: failedConfirmation.action,
+          status: "rejected",
+          orderId: null,
+          executedPrice: null,
+          executedQty: null,
+          tradingMode: normalizeTradingMode(env.TRADING_MODE),
+          reason: normalizedError.reason,
+          errorMessage: normalizedError.errorMessage,
+          createdAt: new Date().toISOString()
+        })
+      );
 
       await publisher.publish(
         "execution.completed",
         JSON.stringify({
-          ...confirmation,
-          status: result.status,
-          reason: result.reason ?? "ok",
+          ...failedConfirmation,
+          status: "rejected",
+          executedPrice: null,
+          executedQty: null,
+          reason: normalizedError.reason,
+          errorMessage: normalizedError.errorMessage,
           createdAt: new Date().toISOString()
         })
       );
-    } catch (error: unknown) {
+
       console.error("execution-engine message error", error);
     }
   });

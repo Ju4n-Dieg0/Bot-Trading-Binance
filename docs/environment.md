@@ -48,13 +48,17 @@ TELEGRAM_BOT_TOKEN=789123456:AAE-example-token
 - `TRADING_MODE`: `paper` or `real`.
 - `MAX_RISK_PER_TRADE`: max percent risk per trade.
 - `DEFAULT_TIMEFRAME`: default timeframe for market context.
+- `PAPER_INITIAL_BALANCE`: starting balance for paper tracking.
+- `PAPER_ORDER_QUANTITY`: fixed quantity simulated in paper execution.
 
 Example:
 
 ```env
 TRADING_MODE=paper
-MAX_RISK_PER_TRADE=1.0
-DEFAULT_TIMEFRAME=1m
+MAX_RISK_PER_TRADE=0.25
+DEFAULT_TIMEFRAME=1h
+PAPER_INITIAL_BALANCE=1000
+PAPER_ORDER_QUANTITY=0.001
 ```
 
 ## Full Minimal Example
@@ -67,8 +71,10 @@ DATABASE_URL=postgresql://trading:trading@localhost:5432/trading
 REDIS_HOST=localhost
 REDIS_PORT=6379
 TRADING_MODE=paper
-MAX_RISK_PER_TRADE=1.0
-DEFAULT_TIMEFRAME=1m
+MAX_RISK_PER_TRADE=0.25
+DEFAULT_TIMEFRAME=1h
+PAPER_INITIAL_BALANCE=1000
+PAPER_ORDER_QUANTITY=0.001
 ```
 
 ## Validation Behavior

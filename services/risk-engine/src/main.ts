@@ -33,15 +33,30 @@ function evaluateSignal(
   const riskScore = 1 - confidence;
   const suggestedPositionSizePct = calculateSuggestedPositionSizePct(signal, maxRiskPerTradePct);
   const hasPositionCapacity = currentOpenPositions < maxOpenPositions;
+  const hasOpenPositions = currentOpenPositions > 0;
 
-  const approved =
-    signal.action !== "hold" && riskScore <= maxRiskPerTradePct / 100 && hasPositionCapacity;
+  const riskLimit = maxRiskPerTradePct / 100;
 
-  const reason = approved
-    ? "within-risk-limits"
-    : hasPositionCapacity
-      ? "risk-too-high-or-hold-signal"
-      : "max-open-positions-reached";
+  let approved = false;
+  let reason = "hold-signal";
+
+  if (signal.action === "buy") {
+    if (!hasPositionCapacity) {
+      reason = "max-open-positions-reached";
+    } else if (riskScore > riskLimit) {
+      reason = "risk-too-high";
+    } else {
+      approved = true;
+      reason = "within-risk-limits";
+    }
+  } else if (signal.action === "sell") {
+    if (!hasOpenPositions) {
+      reason = "no-open-position-to-close";
+    } else {
+      approved = true;
+      reason = "close-signal-approved";
+    }
+  }
 
   return {
     signal,

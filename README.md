@@ -215,7 +215,7 @@ Maximum risk budget per trade, expressed in percent.
 Example:
 
 ```env
-MAX_RISK_PER_TRADE=1.0
+MAX_RISK_PER_TRADE=0.25
 ```
 
 ### `DEFAULT_TIMEFRAME`
@@ -226,6 +226,26 @@ Example:
 
 ```env
 DEFAULT_TIMEFRAME=1m
+```
+
+### `PAPER_INITIAL_BALANCE`
+
+Starting simulated balance used in paper trading confirmations.
+
+Example:
+
+```env
+PAPER_INITIAL_BALANCE=1000
+```
+
+### `PAPER_ORDER_QUANTITY`
+
+Fixed simulated quantity used by paper execution.
+
+Example:
+
+```env
+PAPER_ORDER_QUANTITY=0.001
 ```
 
 ## How To Test

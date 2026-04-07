@@ -37,7 +37,7 @@ services:
     volumes:
       - ../../:/workspace
       - /workspace/node_modules
-    command: sh -c "corepack enable; pnpm install --force --no-frozen-lockfile; pnpm --filter @apps/trading-api exec tsx watch src/main.ts"
+    command: sh -c "corepack enable; pnpm install --force --no-frozen-lockfile; pnpm --filter @apps/trading-api dev"
     depends_on:
       - postgres
       - redis
@@ -74,6 +74,70 @@ services:
       - redis
     ports:
       - "8000:8000"
+
+  market-data-service:
+    image: node:20-alpine
+    container_name: market-data-service
+    working_dir: /workspace
+    env_file:
+      - ../../.env
+    environment:
+      REDIS_HOST: redis
+    volumes:
+      - ../../:/workspace
+      - /workspace/node_modules
+    command: sh -c "corepack enable; pnpm install --force --no-frozen-lockfile; pnpm --filter @services/market-data-service dev"
+    depends_on:
+      - redis
+
+  signal-engine:
+    image: node:20-alpine
+    container_name: signal-engine
+    working_dir: /workspace
+    env_file:
+      - ../../.env
+    environment:
+      REDIS_HOST: redis
+    volumes:
+      - ../../:/workspace
+      - /workspace/node_modules
+    command: sh -c "corepack enable; pnpm install --force --no-frozen-lockfile; pnpm --filter @services/signal-engine dev"
+    depends_on:
+      - redis
+      - ai-engine
+
+  risk-engine:
+    image: node:20-alpine
+    container_name: risk-engine
+    working_dir: /workspace
+    env_file:
+      - ../../.env
+    environment:
+      REDIS_HOST: redis
+    volumes:
+      - ../../:/workspace
+      - /workspace/node_modules
+    command: sh -c "corepack enable; pnpm install --force --no-frozen-lockfile; pnpm --filter @services/risk-engine dev"
+    depends_on:
+      - redis
+      - signal-engine
+
+  execution-engine:
+    image: node:20-alpine
+    container_name: execution-engine
+    working_dir: /workspace
+    env_file:
+      - ../../.env
+    environment:
+      REDIS_HOST: redis
+      DATABASE_URL: postgresql://${POSTGRES_USER:-trading}:${POSTGRES_PASSWORD:-trading}@postgres:5432/${POSTGRES_DB:-trading}
+    volumes:
+      - ../../:/workspace
+      - /workspace/node_modules
+    command: sh -c "corepack enable; pnpm install --force --no-frozen-lockfile; pnpm --filter @services/execution-engine dev"
+    depends_on:
+      - redis
+      - postgres
 
 volumes:
   postgres_data:
